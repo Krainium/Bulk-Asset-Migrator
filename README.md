@@ -17,7 +17,7 @@ go build -o bulk-asset-migrator
 ./bulk-asset-migrator
 ```
 
-That's it. Requires Go 1.22 or newer. The binary is statically linked, around 5 MB, and runs anywhere Go targets.
+That's it. Requires Go 1.25 or newer. The binary is statically linked, around 8 MB, and runs anywhere Go targets.
 
 ## 🖥️ Two ways to run
 
@@ -144,4 +144,4 @@ Switch path-mapping mode in the settings menu (or pass `--strip N` / `--flatten`
 
 ## 🛠️ Built with
 
-Standard library only. No third-party dependencies. Single source file, single binary, around 5 MB. Runs anywhere Go targets.
+Standard library only. No third-party dependencies. Single source file, single binary, around 8 MB. Runs anywhere Go targets.

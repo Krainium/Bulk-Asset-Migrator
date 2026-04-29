@@ -145,3 +145,7 @@ Switch path-mapping mode in the settings menu (or pass `--strip N` / `--flatten`
 ## 🛠️ Built with
 
 Standard library only. No third-party dependencies. Single source file, single binary, around 8 MB. Runs anywhere Go targets.
+
+## 📄 License
+
+[MIT](LICENSE) © Krainium. Use it, fork it, ship it.

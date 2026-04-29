@@ -602,8 +602,13 @@ func showHelp() {
 
 func prompt(in *bufio.Reader, msg string) string {
         fmt.Print(msg)
-        line, _ := in.ReadString('\n')
-        return strings.TrimRight(line, "\r\n ")
+        line, err := in.ReadString('\n')
+        line = strings.TrimRight(line, "\r\n ")
+        if errors.Is(err, io.EOF) && line == "" {
+                fmt.Println("\nEOF — bye.")
+                os.Exit(0)
+        }
+        return line
 }
 
 func promptStr(in *bufio.Reader, msg, current string) string {

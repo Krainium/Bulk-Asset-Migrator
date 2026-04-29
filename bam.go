@@ -17,6 +17,7 @@ import (
         "os/signal"
         "path"
         "path/filepath"
+        "strconv"
         "strings"
         "sync"
         "sync/atomic"
@@ -344,103 +345,412 @@ func splitHeader(h string) (string, string, bool) {
 }
 
 // =====================================================================
-  // Direct (flag) mode entry — single CLI surface for v1
-  // =====================================================================
+// Interactive menu
+// =====================================================================
 
-  type headerFlag []string
+const banner = `
+═══════════════════════════════════════════════════════════
+   Bulk-Asset-Migrator  v` + version + `
+   concurrent downloader for site-migration asset dumps
+═══════════════════════════════════════════════════════════`
 
-  func (h *headerFlag) String() string { return strings.Join(*h, ", ") }
-  func (h *headerFlag) Set(v string) error {
-  	if !strings.Contains(v, ":") {
-  		return fmt.Errorf("header must be in 'Name: value' form, got %q", v)
-  	}
-  	*h = append(*h, v)
-  	return nil
-  }
+func runMenu(cfg *Config) {
+        in := bufio.NewReader(os.Stdin)
+        fmt.Println(banner)
+        for {
+                showSettings(cfg)
+                fmt.Println("What would you like to do?")
+                fmt.Println("  1) Download from a URL list (text file)")
+                fmt.Println("  2) Download from a CSV column")
+                fmt.Println("  3) Paste URLs now (one per line, blank line to finish)")
+                fmt.Println("  4) Resume a previous run (skip files already on disk)")
+                fmt.Println("  5) Adjust settings")
+                fmt.Println("  6) Help / flag reference")
+                fmt.Println("  0) Quit")
+                choice := prompt(in, "\nChoose [0-6]: ")
+                fmt.Println()
+                switch choice {
+                case "1":
+                        menuDownloadList(in, cfg)
+                case "2":
+                        menuDownloadCSV(in, cfg)
+                case "3":
+                        menuPasteURLs(in, cfg)
+                case "4":
+                        menuResume(in, cfg)
+                case "5":
+                        menuSettings(in, cfg)
+                case "6":
+                        showHelp()
+                case "0", "q", "quit", "exit":
+                        fmt.Println("bye.")
+                        return
+                default:
+                        fmt.Println("invalid choice. pick 0-6.")
+                }
+                fmt.Println()
+        }
+}
 
-  func main() {
-  	var (
-  		outputDir   = flag.String("o", "./downloaded_assets", "output directory")
-  		concurrency = flag.Int("c", 10, "parallel downloads")
-  		retries     = flag.Int("r", 3, "retry count per file")
-  		timeout     = flag.Duration("t", 60*time.Second, "per-request timeout")
-  		baseURL     = flag.String("u", "", "base URL for resolving relative inputs")
-  		csvField    = flag.String("csv", "", "read URLs from named column in a CSV file")
-  		stripN      = flag.Int("strip", 0, "strip N leading path components")
-  		flatten     = flag.Bool("flatten", false, "drop directory structure, save by basename")
-  		skipExist   = flag.Bool("skip-existing", false, "skip files that already exist on disk")
-  		quiet       = flag.Bool("q", false, "only print summary")
-  		showVersion = flag.Bool("version", false, "print version and exit")
-  		headers     headerFlag
-  	)
-  	flag.Var(&headers, "H", "extra HTTP header (repeatable; e.g. -H 'Cookie: x=y')")
-  	flag.Usage = func() {
-  		fmt.Fprintf(os.Stderr, `Bulk-Asset-Migrator %s — concurrent downloader for site-migration asset dumps
+func showSettings(cfg *Config) {
+        pathMode := "preserve full URL path"
+        if cfg.Flatten {
+                pathMode = "flatten (basename only)"
+        } else if cfg.StripN > 0 {
+                pathMode = fmt.Sprintf("strip %d leading components", cfg.StripN)
+        }
+        skip := "no"
+        if cfg.SkipExisting {
+                skip = "yes"
+        }
+        base := cfg.BaseURL
+        if base == "" {
+                base = "(none)"
+        }
+        fmt.Println("Current settings:")
+        fmt.Printf("  output dir   : %s\n", cfg.OutputDir)
+        fmt.Printf("  concurrency  : %d\n", cfg.Concurrency)
+        fmt.Printf("  retries      : %d\n", cfg.Retries)
+        fmt.Printf("  timeout      : %s\n", cfg.Timeout)
+        fmt.Printf("  path mapping : %s\n", pathMode)
+        fmt.Printf("  skip existing: %s\n", skip)
+        fmt.Printf("  base URL     : %s\n", base)
+        fmt.Printf("  headers      : %d set\n\n", len(cfg.Headers))
+}
 
-  Usage:
-    bulk-asset-migrator [flags] <source>
+func menuDownloadList(in *bufio.Reader, cfg *Config) {
+        src := prompt(in, "Path to URL list file (one per line, # for comments): ")
+        if src == "" {
+                fmt.Println("cancelled.")
+                return
+        }
+        urls, err := readSource(src, "", cfg.BaseURL)
+        if err != nil {
+                fmt.Println("error:", err)
+                return
+        }
+        executeRun(urls, cfg)
+}
 
-    source: '-' for stdin, otherwise a path to a text file with one URL per line.
-            Lines starting with '#' are ignored.
-            With --csv FIELD, the file is parsed as CSV and URLs come from that column.
+func menuDownloadCSV(in *bufio.Reader, cfg *Config) {
+        src := prompt(in, "Path to CSV file: ")
+        if src == "" {
+                fmt.Println("cancelled.")
+                return
+        }
+        field := prompt(in, "Column name containing URLs: ")
+        if field == "" {
+                fmt.Println("cancelled.")
+                return
+        }
+        urls, err := readSource(src, field, cfg.BaseURL)
+        if err != nil {
+                fmt.Println("error:", err)
+                return
+        }
+        executeRun(urls, cfg)
+}
 
-  Flags:
-  `, version)
-  		flag.PrintDefaults()
-  	}
-  	flag.Parse()
+func menuPasteURLs(in *bufio.Reader, cfg *Config) {
+        fmt.Println("Paste URLs (one per line). Empty line to finish:")
+        var lines []string
+        for {
+                line, err := in.ReadString('\n')
+                line = strings.TrimRight(line, "\r\n")
+                if line == "" {
+                        break
+                }
+                lines = append(lines, line)
+                if err != nil {
+                        break
+                }
+        }
+        urls, err := resolveURLs(lines, cfg.BaseURL)
+        if err != nil {
+                fmt.Println("error:", err)
+                return
+        }
+        executeRun(urls, cfg)
+}
 
-  	if *showVersion {
-  		fmt.Println("Bulk-Asset-Migrator", version)
-  		return
-  	}
+func menuResume(in *bufio.Reader, cfg *Config) {
+        src := prompt(in, "Path to URL list (text or CSV): ")
+        if src == "" {
+                fmt.Println("cancelled.")
+                return
+        }
+        field := prompt(in, "CSV column name (leave blank if plain text): ")
+        prev := cfg.SkipExisting
+        cfg.SkipExisting = true
+        urls, err := readSource(src, field, cfg.BaseURL)
+        if err != nil {
+                cfg.SkipExisting = prev
+                fmt.Println("error:", err)
+                return
+        }
+        executeRun(urls, cfg)
+        cfg.SkipExisting = prev
+}
 
-  	args := flag.Args()
-  	if len(args) != 1 {
-  		flag.Usage()
-  		os.Exit(2)
-  	}
+func menuSettings(in *bufio.Reader, cfg *Config) {
+        for {
+                fmt.Println("Settings:")
+                fmt.Printf("  1) Output directory       [%s]\n", cfg.OutputDir)
+                fmt.Printf("  2) Concurrency            [%d]\n", cfg.Concurrency)
+                fmt.Printf("  3) Retries                [%d]\n", cfg.Retries)
+                fmt.Printf("  4) Timeout                [%s]\n", cfg.Timeout)
+                fmt.Printf("  5) Add HTTP header        (current: %d)\n", len(cfg.Headers))
+                fmt.Printf("  6) Clear all headers\n")
+                fmt.Printf("  7) Toggle skip-existing   [%v]\n", cfg.SkipExisting)
+                fmt.Printf("  8) Path mapping mode      [strip=%d flatten=%v]\n", cfg.StripN, cfg.Flatten)
+                fmt.Printf("  9) Base URL for relative  [%s]\n", orNone(cfg.BaseURL))
+                fmt.Printf("  0) Back\n")
+                choice := prompt(in, "Choose [0-9]: ")
+                fmt.Println()
+                switch choice {
+                case "1":
+                        cfg.OutputDir = promptStr(in, "Output directory", cfg.OutputDir)
+                case "2":
+                        cfg.Concurrency = promptInt(in, "Concurrency", cfg.Concurrency)
+                case "3":
+                        cfg.Retries = promptInt(in, "Retries", cfg.Retries)
+                case "4":
+                        cfg.Timeout = promptDuration(in, "Timeout", cfg.Timeout)
+                        cfg.Client = &http.Client{Timeout: cfg.Timeout}
+                case "5":
+                        h := prompt(in, "Header (Name: value): ")
+                        if _, _, ok := splitHeader(h); ok {
+                                cfg.Headers = append(cfg.Headers, h)
+                                fmt.Println("added.")
+                        } else if h != "" {
+                                fmt.Println("invalid header (need 'Name: value').")
+                        }
+                case "6":
+                        cfg.Headers = nil
+                        fmt.Println("headers cleared.")
+                case "7":
+                        cfg.SkipExisting = !cfg.SkipExisting
+                        fmt.Printf("skip-existing = %v\n", cfg.SkipExisting)
+                case "8":
+                        menuPathMode(in, cfg)
+                case "9":
+                        cfg.BaseURL = promptStr(in, "Base URL for resolving relative paths (blank = none)", cfg.BaseURL)
+                case "0", "":
+                        return
+                default:
+                        fmt.Println("invalid choice.")
+                }
+                fmt.Println()
+        }
+}
 
-  	urls, err := readSource(args[0], *csvField, *baseURL)
-  	if err != nil {
-  		fmt.Fprintln(os.Stderr, "source error:", err)
-  		os.Exit(1)
-  	}
-  	if len(urls) == 0 {
-  		fmt.Fprintln(os.Stderr, "no URLs to download")
-  		os.Exit(1)
-  	}
+func menuPathMode(in *bufio.Reader, cfg *Config) {
+        fmt.Println("Path mapping mode:")
+        fmt.Println("  1) Preserve full URL path")
+        fmt.Println("  2) Strip N leading components")
+        fmt.Println("  3) Flatten (basename only)")
+        c := prompt(in, "Choose [1-3]: ")
+        switch c {
+        case "1":
+                cfg.StripN = 0
+                cfg.Flatten = false
+        case "2":
+                cfg.Flatten = false
+                cfg.StripN = promptInt(in, "How many leading components to strip", cfg.StripN)
+        case "3":
+                cfg.Flatten = true
+                cfg.StripN = 0
+        default:
+                fmt.Println("kept current setting.")
+        }
+}
 
-  	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-  	defer cancel()
+func executeRun(urls []string, cfg *Config) {
+        if len(urls) == 0 {
+                fmt.Println("no URLs to download.")
+                return
+        }
+        fmt.Printf("→ %d URLs queued, starting...\n\n", len(urls))
+        ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+        defer cancel()
+        stats := Run(ctx, urls, *cfg)
+        fmt.Printf("\nok=%d  failed=%d  skipped=%d  total=%d  elapsed=%s\n",
+                stats.OK, stats.Failed, stats.Skipped, stats.Total,
+                stats.Elapsed.Truncate(time.Millisecond))
+}
 
-  	cfg := Config{
-  		OutputDir:    *outputDir,
-  		Concurrency:  *concurrency,
-  		Retries:      *retries,
-  		Timeout:      *timeout,
-  		Headers:      headers,
-  		StripN:       *stripN,
-  		Flatten:      *flatten,
-  		SkipExisting: *skipExist,
-  		Quiet:        *quiet,
-  		Client:       &http.Client{Timeout: *timeout},
-  	}
+func showHelp() {
+        fmt.Println("Direct (scriptable) mode:")
+        fmt.Println("  bulk-asset-migrator [flags] <source>")
+        fmt.Println()
+        fmt.Println("  source: '-' for stdin, otherwise a path to a text or CSV file.")
+        fmt.Println()
+        fmt.Println("Flags:")
+        fmt.Println("  -o DIR             output directory")
+        fmt.Println("  -c N               parallel downloads")
+        fmt.Println("  -r N               retry count per file")
+        fmt.Println("  -t DUR             per-request timeout (e.g. 30s)")
+        fmt.Println("  -u URL             base URL for relative inputs")
+        fmt.Println("  -H \"Name: value\"   extra HTTP header (repeatable)")
+        fmt.Println("  --csv FIELD        read URLs from named CSV column")
+        fmt.Println("  --strip N          strip N leading path components")
+        fmt.Println("  --flatten          drop directory structure")
+        fmt.Println("  --skip-existing    skip files that already exist")
+        fmt.Println("  -q                 only print summary")
+        fmt.Println("  --version          print version")
+}
 
-  	if !*quiet {
-  		fmt.Printf("→ %d URLs, concurrency=%d, output=%s\n", len(urls), *concurrency, *outputDir)
-  	}
+func prompt(in *bufio.Reader, msg string) string {
+        fmt.Print(msg)
+        line, _ := in.ReadString('\n')
+        return strings.TrimRight(line, "\r\n ")
+}
 
-  	stats := Run(ctx, urls, cfg)
+func promptStr(in *bufio.Reader, msg, current string) string {
+        v := prompt(in, fmt.Sprintf("%s [%s]: ", msg, current))
+        if v == "" {
+                return current
+        }
+        return v
+}
 
-  	if !*quiet {
-  		fmt.Println()
-  	}
-  	fmt.Printf("ok=%d  failed=%d  skipped=%d  total=%d  elapsed=%s\n",
-  		stats.OK, stats.Failed, stats.Skipped, stats.Total, stats.Elapsed.Truncate(time.Millisecond))
+func promptInt(in *bufio.Reader, msg string, current int) int {
+        v := prompt(in, fmt.Sprintf("%s [%d]: ", msg, current))
+        if v == "" {
+                return current
+        }
+        n, err := strconv.Atoi(v)
+        if err != nil {
+                fmt.Println("not a number, kept current.")
+                return current
+        }
+        return n
+}
 
-  	if stats.Failed > 0 {
-  		os.Exit(1)
-  	}
-  }
-  
+func promptDuration(in *bufio.Reader, msg string, current time.Duration) time.Duration {
+        v := prompt(in, fmt.Sprintf("%s [%s]: ", msg, current))
+        if v == "" {
+                return current
+        }
+        d, err := time.ParseDuration(v)
+        if err != nil {
+                fmt.Println("invalid duration (use e.g. 30s, 2m), kept current.")
+                return current
+        }
+        return d
+}
+
+func orNone(s string) string {
+        if s == "" {
+                return "(none)"
+        }
+        return s
+}
+
+// =====================================================================
+// Direct (flag) mode entry — preserved for scripting / cron / CI
+// =====================================================================
+
+type headerFlag []string
+
+func (h *headerFlag) String() string { return strings.Join(*h, ", ") }
+func (h *headerFlag) Set(v string) error {
+        if !strings.Contains(v, ":") {
+                return fmt.Errorf("header must be in 'Name: value' form, got %q", v)
+        }
+        *h = append(*h, v)
+        return nil
+}
+
+func main() {
+        var (
+                outputDir   = flag.String("o", "./downloaded_assets", "output directory")
+                concurrency = flag.Int("c", 10, "parallel downloads")
+                retries     = flag.Int("r", 3, "retry count per file")
+                timeout     = flag.Duration("t", 60*time.Second, "per-request timeout")
+                baseURL     = flag.String("u", "", "base URL for resolving relative inputs")
+                csvField    = flag.String("csv", "", "read URLs from named column in a CSV file")
+                stripN      = flag.Int("strip", 0, "strip N leading path components")
+                flatten     = flag.Bool("flatten", false, "drop directory structure, save by basename")
+                skipExist   = flag.Bool("skip-existing", false, "skip files that already exist on disk")
+                quiet       = flag.Bool("q", false, "only print summary")
+                showVersion = flag.Bool("version", false, "print version and exit")
+                headers     headerFlag
+        )
+        flag.Var(&headers, "H", "extra HTTP header (repeatable; e.g. -H 'Cookie: x=y')")
+        flag.Usage = func() {
+                fmt.Fprintf(os.Stderr, `Bulk-Asset-Migrator %s — concurrent downloader for site-migration asset dumps
+
+Usage:
+  bulk-asset-migrator                       launch the interactive menu
+  bulk-asset-migrator [flags] <source>      direct mode (script-friendly)
+
+  source: '-' for stdin, otherwise a path to a text file with one URL per line.
+          Lines starting with '#' are ignored.
+          With --csv FIELD, the file is parsed as CSV and URLs come from that column.
+
+Flags:
+`, version)
+                flag.PrintDefaults()
+        }
+        flag.Parse()
+
+        if *showVersion {
+                fmt.Println("Bulk-Asset-Migrator", version)
+                return
+        }
+
+        args := flag.Args()
+        if len(args) == 0 {
+                // No source argument → interactive menu.
+                cfg := defaultConfig()
+                runMenu(cfg)
+                return
+        }
+        if len(args) != 1 {
+                flag.Usage()
+                os.Exit(2)
+        }
+
+        urls, err := readSource(args[0], *csvField, *baseURL)
+        if err != nil {
+                fmt.Fprintln(os.Stderr, "source error:", err)
+                os.Exit(1)
+        }
+        if len(urls) == 0 {
+                fmt.Fprintln(os.Stderr, "no URLs to download")
+                os.Exit(1)
+        }
+
+        ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+        defer cancel()
+
+        cfg := Config{
+                OutputDir:    *outputDir,
+                Concurrency:  *concurrency,
+                Retries:      *retries,
+                Timeout:      *timeout,
+                Headers:      headers,
+                StripN:       *stripN,
+                Flatten:      *flatten,
+                SkipExisting: *skipExist,
+                Quiet:        *quiet,
+                Client:       &http.Client{Timeout: *timeout},
+        }
+
+        if !*quiet {
+                fmt.Printf("→ %d URLs, concurrency=%d, output=%s\n", len(urls), *concurrency, *outputDir)
+        }
+
+        stats := Run(ctx, urls, cfg)
+
+        if !*quiet {
+                fmt.Println()
+        }
+        fmt.Printf("ok=%d  failed=%d  skipped=%d  total=%d  elapsed=%s\n",
+                stats.OK, stats.Failed, stats.Skipped, stats.Total, stats.Elapsed.Truncate(time.Millisecond))
+
+        if stats.Failed > 0 {
+                os.Exit(1)
+        }
+}

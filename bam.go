@@ -28,6 +28,43 @@ import (
 const version = "0.2.0"
 
 // =====================================================================
+// ANSI color helpers — auto-disable on non-TTY, NO_COLOR, or TERM=dumb
+// =====================================================================
+
+var colorEnabled = func() bool {
+        if os.Getenv("NO_COLOR") != "" {
+                return false
+        }
+        if t := os.Getenv("TERM"); t == "" || t == "dumb" {
+                return false
+        }
+        fi, err := os.Stdout.Stat()
+        if err != nil {
+                return false
+        }
+        return (fi.Mode() & os.ModeCharDevice) != 0
+}()
+
+func paint(code, s string) string {
+        if !colorEnabled {
+                return s
+        }
+        return "\x1b[" + code + "m" + s + "\x1b[0m"
+}
+
+func cBold(s string) string    { return paint("1", s) }
+func cDim(s string) string     { return paint("2", s) }
+func cRed(s string) string     { return paint("31", s) }
+func cGreen(s string) string   { return paint("32", s) }
+func cYellow(s string) string  { return paint("33", s) }
+func cBlue(s string) string    { return paint("34", s) }
+func cMagenta(s string) string { return paint("35", s) }
+func cCyan(s string) string    { return paint("36", s) }
+func cBoldCyan(s string) string { return paint("1;36", s) }
+func cBoldGreen(s string) string { return paint("1;32", s) }
+func cBoldRed(s string) string   { return paint("1;31", s) }
+
+// =====================================================================
 // Configuration and statistics
 // =====================================================================
 
@@ -101,13 +138,13 @@ func Run(ctx context.Context, urls []string, cfg Config) Stats {
                         dest, err := MapPath(u, cfg.OutputDir, cfg.StripN, cfg.Flatten)
                         if err != nil {
                                 atomic.AddInt64(&failed, 1)
-                                logf("FAIL  %s  (path: %v)", u, err)
+                                logf("%s  %s  %s", cBoldRed("FAIL"), u, cDim(fmt.Sprintf("(path: %v)", err)))
                                 return
                         }
                         if cfg.SkipExisting {
                                 if _, err := os.Stat(dest); err == nil {
                                         atomic.AddInt64(&skipped, 1)
-                                        logf("SKIP  %s", dest)
+                                        logf("%s  %s", cYellow("SKIP"), cDim(dest))
                                         return
                                 }
                         }
@@ -116,11 +153,11 @@ func Run(ctx context.Context, urls []string, cfg Config) Stats {
                         })
                         if err != nil {
                                 atomic.AddInt64(&failed, 1)
-                                logf("FAIL  %s  (%v)", u, err)
+                                logf("%s  %s  %s", cBoldRed("FAIL"), u, cDim(fmt.Sprintf("(%v)", err)))
                                 return
                         }
                         atomic.AddInt64(&ok, 1)
-                        logf("OK    %s", dest)
+                        logf("%s    %s", cBoldGreen("OK"), dest)
                 }(u)
         }
         wg.Wait()
@@ -348,26 +385,26 @@ func splitHeader(h string) (string, string, bool) {
 // Interactive menu
 // =====================================================================
 
-const banner = `
+var banner = cBoldCyan(`
 ═══════════════════════════════════════════════════════════
-   Bulk-Asset-Migrator  v` + version + `
+   Bulk-Asset-Migrator  v`+version+`
    concurrent downloader for site-migration asset dumps
-═══════════════════════════════════════════════════════════`
+═══════════════════════════════════════════════════════════`)
 
 func runMenu(cfg *Config) {
         in := bufio.NewReader(os.Stdin)
         fmt.Println(banner)
         for {
                 showSettings(cfg)
-                fmt.Println("What would you like to do?")
-                fmt.Println("  1) Download from a URL list (text file)")
-                fmt.Println("  2) Download from a CSV column")
-                fmt.Println("  3) Paste URLs now (one per line, blank line to finish)")
-                fmt.Println("  4) Resume a previous run (skip files already on disk)")
-                fmt.Println("  5) Adjust settings")
-                fmt.Println("  6) Help / flag reference")
-                fmt.Println("  0) Quit")
-                choice := prompt(in, "\nChoose [0-6]: ")
+                fmt.Println(cBold("What would you like to do?"))
+                fmt.Printf("  %s) Download from a URL list (text file)\n", cBoldCyan("1"))
+                fmt.Printf("  %s) Download from a CSV column\n", cBoldCyan("2"))
+                fmt.Printf("  %s) Paste URLs now (one per line, blank line to finish)\n", cBoldCyan("3"))
+                fmt.Printf("  %s) Resume a previous run (skip files already on disk)\n", cBoldCyan("4"))
+                fmt.Printf("  %s) Adjust settings\n", cBoldCyan("5"))
+                fmt.Printf("  %s) Help / flag reference\n", cBoldCyan("6"))
+                fmt.Printf("  %s) Quit\n", cBoldCyan("0"))
+                choice := prompt(in, "\n"+cBold("Choose [0-6]: "))
                 fmt.Println()
                 switch choice {
                 case "1":
@@ -383,10 +420,10 @@ func runMenu(cfg *Config) {
                 case "6":
                         showHelp()
                 case "0", "q", "quit", "exit":
-                        fmt.Println("bye.")
+                        fmt.Println(cDim("bye."))
                         return
                 default:
-                        fmt.Println("invalid choice. pick 0-6.")
+                        fmt.Println(cYellow("invalid choice. pick 0-6."))
                 }
                 fmt.Println()
         }
@@ -407,26 +444,26 @@ func showSettings(cfg *Config) {
         if base == "" {
                 base = "(none)"
         }
-        fmt.Println("Current settings:")
-        fmt.Printf("  output dir   : %s\n", cfg.OutputDir)
-        fmt.Printf("  concurrency  : %d\n", cfg.Concurrency)
-        fmt.Printf("  retries      : %d\n", cfg.Retries)
-        fmt.Printf("  timeout      : %s\n", cfg.Timeout)
-        fmt.Printf("  path mapping : %s\n", pathMode)
-        fmt.Printf("  skip existing: %s\n", skip)
-        fmt.Printf("  base URL     : %s\n", base)
-        fmt.Printf("  headers      : %d set\n\n", len(cfg.Headers))
+        fmt.Println(cBold("Current settings:"))
+        fmt.Printf("  %s: %s\n", cDim("output dir   "), cCyan(cfg.OutputDir))
+        fmt.Printf("  %s: %s\n", cDim("concurrency  "), cCyan(fmt.Sprintf("%d", cfg.Concurrency)))
+        fmt.Printf("  %s: %s\n", cDim("retries      "), cCyan(fmt.Sprintf("%d", cfg.Retries)))
+        fmt.Printf("  %s: %s\n", cDim("timeout      "), cCyan(cfg.Timeout.String()))
+        fmt.Printf("  %s: %s\n", cDim("path mapping "), cCyan(pathMode))
+        fmt.Printf("  %s: %s\n", cDim("skip existing"), cCyan(skip))
+        fmt.Printf("  %s: %s\n", cDim("base URL     "), cCyan(base))
+        fmt.Printf("  %s: %s\n\n", cDim("headers      "), cCyan(fmt.Sprintf("%d set", len(cfg.Headers))))
 }
 
 func menuDownloadList(in *bufio.Reader, cfg *Config) {
         src := prompt(in, "Path to URL list file (one per line, # for comments): ")
         if src == "" {
-                fmt.Println("cancelled.")
+                fmt.Println(cYellow("cancelled."))
                 return
         }
         urls, err := readSource(src, "", cfg.BaseURL)
         if err != nil {
-                fmt.Println("error:", err)
+                fmt.Println(cRed("error:"), err)
                 return
         }
         executeRun(urls, cfg)
@@ -435,24 +472,24 @@ func menuDownloadList(in *bufio.Reader, cfg *Config) {
 func menuDownloadCSV(in *bufio.Reader, cfg *Config) {
         src := prompt(in, "Path to CSV file: ")
         if src == "" {
-                fmt.Println("cancelled.")
+                fmt.Println(cYellow("cancelled."))
                 return
         }
         field := prompt(in, "Column name containing URLs: ")
         if field == "" {
-                fmt.Println("cancelled.")
+                fmt.Println(cYellow("cancelled."))
                 return
         }
         urls, err := readSource(src, field, cfg.BaseURL)
         if err != nil {
-                fmt.Println("error:", err)
+                fmt.Println(cRed("error:"), err)
                 return
         }
         executeRun(urls, cfg)
 }
 
 func menuPasteURLs(in *bufio.Reader, cfg *Config) {
-        fmt.Println("Paste URLs (one per line). Empty line to finish:")
+        fmt.Println(cBold("Paste URLs (one per line). Empty line to finish:"))
         var lines []string
         for {
                 line, err := in.ReadString('\n')
@@ -467,7 +504,7 @@ func menuPasteURLs(in *bufio.Reader, cfg *Config) {
         }
         urls, err := resolveURLs(lines, cfg.BaseURL)
         if err != nil {
-                fmt.Println("error:", err)
+                fmt.Println(cRed("error:"), err)
                 return
         }
         executeRun(urls, cfg)
@@ -476,7 +513,7 @@ func menuPasteURLs(in *bufio.Reader, cfg *Config) {
 func menuResume(in *bufio.Reader, cfg *Config) {
         src := prompt(in, "Path to URL list (text or CSV): ")
         if src == "" {
-                fmt.Println("cancelled.")
+                fmt.Println(cYellow("cancelled."))
                 return
         }
         field := prompt(in, "CSV column name (leave blank if plain text): ")
@@ -485,7 +522,7 @@ func menuResume(in *bufio.Reader, cfg *Config) {
         urls, err := readSource(src, field, cfg.BaseURL)
         if err != nil {
                 cfg.SkipExisting = prev
-                fmt.Println("error:", err)
+                fmt.Println(cRed("error:"), err)
                 return
         }
         executeRun(urls, cfg)
@@ -494,18 +531,18 @@ func menuResume(in *bufio.Reader, cfg *Config) {
 
 func menuSettings(in *bufio.Reader, cfg *Config) {
         for {
-                fmt.Println("Settings:")
-                fmt.Printf("  1) Output directory       [%s]\n", cfg.OutputDir)
-                fmt.Printf("  2) Concurrency            [%d]\n", cfg.Concurrency)
-                fmt.Printf("  3) Retries                [%d]\n", cfg.Retries)
-                fmt.Printf("  4) Timeout                [%s]\n", cfg.Timeout)
-                fmt.Printf("  5) Add HTTP header        (current: %d)\n", len(cfg.Headers))
-                fmt.Printf("  6) Clear all headers\n")
-                fmt.Printf("  7) Toggle skip-existing   [%v]\n", cfg.SkipExisting)
-                fmt.Printf("  8) Path mapping mode      [strip=%d flatten=%v]\n", cfg.StripN, cfg.Flatten)
-                fmt.Printf("  9) Base URL for relative  [%s]\n", orNone(cfg.BaseURL))
-                fmt.Printf("  0) Back\n")
-                choice := prompt(in, "Choose [0-9]: ")
+                fmt.Println(cBold("Settings:"))
+                fmt.Printf("  %s) Output directory       [%s]\n", cBoldCyan("1"), cCyan(cfg.OutputDir))
+                fmt.Printf("  %s) Concurrency            [%s]\n", cBoldCyan("2"), cCyan(fmt.Sprintf("%d", cfg.Concurrency)))
+                fmt.Printf("  %s) Retries                [%s]\n", cBoldCyan("3"), cCyan(fmt.Sprintf("%d", cfg.Retries)))
+                fmt.Printf("  %s) Timeout                [%s]\n", cBoldCyan("4"), cCyan(cfg.Timeout.String()))
+                fmt.Printf("  %s) Add HTTP header        (current: %s)\n", cBoldCyan("5"), cCyan(fmt.Sprintf("%d", len(cfg.Headers))))
+                fmt.Printf("  %s) Clear all headers\n", cBoldCyan("6"))
+                fmt.Printf("  %s) Toggle skip-existing   [%s]\n", cBoldCyan("7"), cCyan(fmt.Sprintf("%v", cfg.SkipExisting)))
+                fmt.Printf("  %s) Path mapping mode      [strip=%d flatten=%v]\n", cBoldCyan("8"), cfg.StripN, cfg.Flatten)
+                fmt.Printf("  %s) Base URL for relative  [%s]\n", cBoldCyan("9"), cCyan(orNone(cfg.BaseURL)))
+                fmt.Printf("  %s) Back\n", cBoldCyan("0"))
+                choice := prompt(in, cBold("Choose [0-9]: "))
                 fmt.Println()
                 switch choice {
                 case "1":
@@ -521,16 +558,16 @@ func menuSettings(in *bufio.Reader, cfg *Config) {
                         h := prompt(in, "Header (Name: value): ")
                         if _, _, ok := splitHeader(h); ok {
                                 cfg.Headers = append(cfg.Headers, h)
-                                fmt.Println("added.")
+                                fmt.Println(cGreen("added."))
                         } else if h != "" {
-                                fmt.Println("invalid header (need 'Name: value').")
+                                fmt.Println(cYellow("invalid header (need 'Name: value')."))
                         }
                 case "6":
                         cfg.Headers = nil
-                        fmt.Println("headers cleared.")
+                        fmt.Println(cGreen("headers cleared."))
                 case "7":
                         cfg.SkipExisting = !cfg.SkipExisting
-                        fmt.Printf("skip-existing = %v\n", cfg.SkipExisting)
+                        fmt.Printf("skip-existing = %s\n", cCyan(fmt.Sprintf("%v", cfg.SkipExisting)))
                 case "8":
                         menuPathMode(in, cfg)
                 case "9":
@@ -538,18 +575,18 @@ func menuSettings(in *bufio.Reader, cfg *Config) {
                 case "0", "":
                         return
                 default:
-                        fmt.Println("invalid choice.")
+                        fmt.Println(cYellow("invalid choice."))
                 }
                 fmt.Println()
         }
 }
 
 func menuPathMode(in *bufio.Reader, cfg *Config) {
-        fmt.Println("Path mapping mode:")
-        fmt.Println("  1) Preserve full URL path")
-        fmt.Println("  2) Strip N leading components")
-        fmt.Println("  3) Flatten (basename only)")
-        c := prompt(in, "Choose [1-3]: ")
+        fmt.Println(cBold("Path mapping mode:"))
+        fmt.Printf("  %s) Preserve full URL path\n", cBoldCyan("1"))
+        fmt.Printf("  %s) Strip N leading components\n", cBoldCyan("2"))
+        fmt.Printf("  %s) Flatten (basename only)\n", cBoldCyan("3"))
+        c := prompt(in, cBold("Choose [1-3]: "))
         switch c {
         case "1":
                 cfg.StripN = 0
@@ -561,43 +598,47 @@ func menuPathMode(in *bufio.Reader, cfg *Config) {
                 cfg.Flatten = true
                 cfg.StripN = 0
         default:
-                fmt.Println("kept current setting.")
+                fmt.Println(cYellow("kept current setting."))
         }
 }
 
 func executeRun(urls []string, cfg *Config) {
         if len(urls) == 0 {
-                fmt.Println("no URLs to download.")
+                fmt.Println(cYellow("no URLs to download."))
                 return
         }
-        fmt.Printf("→ %d URLs queued, starting...\n\n", len(urls))
+        fmt.Printf("%s %s URLs queued, starting...\n\n", cBoldCyan("→"), cBold(fmt.Sprintf("%d", len(urls))))
         ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
         defer cancel()
         stats := Run(ctx, urls, *cfg)
-        fmt.Printf("\nok=%d  failed=%d  skipped=%d  total=%d  elapsed=%s\n",
-                stats.OK, stats.Failed, stats.Skipped, stats.Total,
-                stats.Elapsed.Truncate(time.Millisecond))
+        fmt.Printf("\n%s  %s  %s  %s  elapsed=%s\n",
+                cBoldGreen(fmt.Sprintf("ok=%d", stats.OK)),
+                cBoldRed(fmt.Sprintf("failed=%d", stats.Failed)),
+                cYellow(fmt.Sprintf("skipped=%d", stats.Skipped)),
+                cBold(fmt.Sprintf("total=%d", stats.Total)),
+                cCyan(stats.Elapsed.Truncate(time.Millisecond).String()))
 }
 
 func showHelp() {
-        fmt.Println("Direct (scriptable) mode:")
-        fmt.Println("  bulk-asset-migrator [flags] <source>")
+        fmt.Println(cBold("Direct (scriptable) mode:"))
+        fmt.Println("  " + cCyan("bulk-asset-migrator [flags] <source>"))
         fmt.Println()
-        fmt.Println("  source: '-' for stdin, otherwise a path to a text or CSV file.")
+        fmt.Println("  " + cDim("source: '-' for stdin, otherwise a path to a text or CSV file."))
         fmt.Println()
-        fmt.Println("Flags:")
-        fmt.Println("  -o DIR             output directory")
-        fmt.Println("  -c N               parallel downloads")
-        fmt.Println("  -r N               retry count per file")
-        fmt.Println("  -t DUR             per-request timeout (e.g. 30s)")
-        fmt.Println("  -u URL             base URL for relative inputs")
-        fmt.Println("  -H \"Name: value\"   extra HTTP header (repeatable)")
-        fmt.Println("  --csv FIELD        read URLs from named CSV column")
-        fmt.Println("  --strip N          strip N leading path components")
-        fmt.Println("  --flatten          drop directory structure")
-        fmt.Println("  --skip-existing    skip files that already exist")
-        fmt.Println("  -q                 only print summary")
-        fmt.Println("  --version          print version")
+        fmt.Println(cBold("Flags:"))
+        fmt.Println("  " + cCyan("-o DIR") + "             output directory")
+        fmt.Println("  " + cCyan("-c N") + "               parallel downloads")
+        fmt.Println("  " + cCyan("-r N") + "               retry count per file")
+        fmt.Println("  " + cCyan("-t DUR") + "             per-request timeout (e.g. 30s)")
+        fmt.Println("  " + cCyan("-u URL") + "             base URL for relative inputs")
+        fmt.Println("  " + cCyan("-H \"Name: value\"") + "   extra HTTP header (repeatable)")
+        fmt.Println("  " + cCyan("--csv FIELD") + "        read URLs from named CSV column")
+        fmt.Println("  " + cCyan("--strip N") + "          strip N leading path components")
+        fmt.Println("  " + cCyan("--flatten") + "          drop directory structure")
+        fmt.Println("  " + cCyan("--skip-existing") + "    skip files that already exist")
+        fmt.Println("  " + cCyan("--no-color") + "         disable ANSI colors")
+        fmt.Println("  " + cCyan("-q") + "                 only print summary")
+        fmt.Println("  " + cCyan("--version") + "          print version")
 }
 
 func prompt(in *bufio.Reader, msg string) string {
@@ -605,7 +646,7 @@ func prompt(in *bufio.Reader, msg string) string {
         line, err := in.ReadString('\n')
         line = strings.TrimRight(line, "\r\n ")
         if errors.Is(err, io.EOF) && line == "" {
-                fmt.Println("\nEOF — bye.")
+                fmt.Println(cDim("\nEOF — bye."))
                 os.Exit(0)
         }
         return line
@@ -679,6 +720,7 @@ func main() {
                 flatten     = flag.Bool("flatten", false, "drop directory structure, save by basename")
                 skipExist   = flag.Bool("skip-existing", false, "skip files that already exist on disk")
                 quiet       = flag.Bool("q", false, "only print summary")
+                noColor     = flag.Bool("no-color", false, "disable ANSI color output")
                 showVersion = flag.Bool("version", false, "print version and exit")
                 headers     headerFlag
         )
@@ -699,6 +741,15 @@ Flags:
                 flag.PrintDefaults()
         }
         flag.Parse()
+
+        if *noColor {
+                colorEnabled = false
+                banner = `
+═══════════════════════════════════════════════════════════
+   Bulk-Asset-Migrator  v` + version + `
+   concurrent downloader for site-migration asset dumps
+═══════════════════════════════════════════════════════════`
+        }
 
         if *showVersion {
                 fmt.Println("Bulk-Asset-Migrator", version)
@@ -744,7 +795,9 @@ Flags:
         }
 
         if !*quiet {
-                fmt.Printf("→ %d URLs, concurrency=%d, output=%s\n", len(urls), *concurrency, *outputDir)
+                fmt.Printf("%s %s URLs, concurrency=%s, output=%s\n",
+                        cBoldCyan("→"), cBold(fmt.Sprintf("%d", len(urls))),
+                        cCyan(fmt.Sprintf("%d", *concurrency)), cCyan(*outputDir))
         }
 
         stats := Run(ctx, urls, cfg)
@@ -752,8 +805,12 @@ Flags:
         if !*quiet {
                 fmt.Println()
         }
-        fmt.Printf("ok=%d  failed=%d  skipped=%d  total=%d  elapsed=%s\n",
-                stats.OK, stats.Failed, stats.Skipped, stats.Total, stats.Elapsed.Truncate(time.Millisecond))
+        fmt.Printf("%s  %s  %s  %s  elapsed=%s\n",
+                cBoldGreen(fmt.Sprintf("ok=%d", stats.OK)),
+                cBoldRed(fmt.Sprintf("failed=%d", stats.Failed)),
+                cYellow(fmt.Sprintf("skipped=%d", stats.Skipped)),
+                cBold(fmt.Sprintf("total=%d", stats.Total)),
+                cCyan(stats.Elapsed.Truncate(time.Millisecond).String()))
 
         if stats.Failed > 0 {
                 os.Exit(1)
